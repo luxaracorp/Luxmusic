@@ -8,7 +8,6 @@ export const CURATED_TRACKS = [
     id: 'billie-jean',
     title: 'Billie Jean',
     artist: 'Michael Jackson',
-    videoId: 'Zi_XLOBDo_Y',
     searchQuery: 'Billie+Jean+Michael+Jackson',
     gradient: 'from-purple-400 to-pink-400',
   },
@@ -16,7 +15,6 @@ export const CURATED_TRACKS = [
     id: 'blinding-lights',
     title: 'Blinding Lights',
     artist: 'The Weeknd',
-    videoId: '4NRXx6U8ABQ',
     searchQuery: 'Blinding+Lights+The+Weeknd',
     gradient: 'from-red-400 to-orange-400',
   },
@@ -24,7 +22,6 @@ export const CURATED_TRACKS = [
     id: 'starboy',
     title: 'Starboy',
     artist: 'The Weeknd',
-    videoId: '34Na4j8AVgA',
     searchQuery: 'Starboy+The+Weeknd',
     gradient: 'from-teal-400 to-cyan-400',
   },
@@ -32,7 +29,6 @@ export const CURATED_TRACKS = [
     id: 'smooth-criminal',
     title: 'Smooth Criminal',
     artist: 'Michael Jackson',
-    videoId: null,
     searchQuery: 'Michael Jackson Smooth Criminal',
     gradient: 'from-indigo-400 to-purple-500',
   },
@@ -40,7 +36,6 @@ export const CURATED_TRACKS = [
     id: 'bohemian-rhapsody',
     title: 'Bohemian Rhapsody',
     artist: 'Queen',
-    videoId: null,
     searchQuery: 'Queen Bohemian Rhapsody',
     gradient: 'from-amber-400 to-rose-500',
   },
@@ -48,7 +43,6 @@ export const CURATED_TRACKS = [
     id: 'levitating',
     title: 'Levitating',
     artist: 'Dua Lipa',
-    videoId: null,
     searchQuery: 'Dua Lipa Levitating',
     gradient: 'from-fuchsia-400 to-pink-500',
   },
@@ -56,7 +50,6 @@ export const CURATED_TRACKS = [
     id: 'bad-guy',
     title: 'bad guy',
     artist: 'Billie Eilish',
-    videoId: null,
     searchQuery: 'Billie Eilish bad guy',
     gradient: 'from-emerald-400 to-teal-500',
   },
@@ -64,7 +57,6 @@ export const CURATED_TRACKS = [
     id: 'uptown-funk',
     title: 'Uptown Funk',
     artist: 'Mark Ronson ft. Bruno Mars',
-    videoId: null,
     searchQuery: 'Mark Ronson Uptown Funk Bruno Mars',
     gradient: 'from-sky-400 to-blue-500',
   },
@@ -90,7 +82,7 @@ export default function App() {
     <div className="relative w-full h-dvh overflow-hidden select-none">
       {view === 'home' && <HomeScreen onSelectTrack={handleTrackSelect} />}
       {view === 'player' && activeTrack && (
-        <div className="animate-slide-in-right absolute inset-0">
+        <div className="animate-screen-in absolute inset-0">
           <PlayerScreen key={playerKey} track={activeTrack} onBack={closePlayer} />
         </div>
       )}
