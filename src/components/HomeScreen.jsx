@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { CURATED_TRACKS } from '../App.jsx'
 import { getRecents, gradientFor } from '../lib/recents.js'
-import { useArtwork } from '../lib/artwork.js'
+import { useArtwork, prefetchArtwork } from '../lib/artwork.js'
 
 const ACCENT = '#fa2d55'
 const RECENTS_KEY = 'recents:v1'
@@ -116,24 +117,51 @@ function Cover({ artist, title, fallbackArt, gradient, rounded = 'rounded-2xl', 
   const resolved = hookUrl || fallbackArt || null
   const [failedUrl, setFailedUrl] = useState(null)
   const [loadedUrl, setLoadedUrl] = useState(null)
+  const [retrySrc, setRetrySrc] = useState(null)
+  const [retryFor, setRetryFor] = useState(null)
+  const retriedRef = useRef(false)
+  const timerRef = useRef(null)
+  // A new URL re-arms the one-shot retry; stale retry/failed state is
+  // ignored via the retryFor/failedUrl comparisons below, so no reset needed.
+  useEffect(() => { retriedRef.current = false }, [resolved])
   const broken = failedUrl != null && failedUrl === resolved
-  const url = broken ? null : resolved
-  const loaded = loadedUrl === resolved && !broken
+  const retryValid = retrySrc != null && retryFor === resolved
+  const src = broken ? null : (retryValid ? retrySrc : resolved)
+  const loaded = src != null && loadedUrl === src && !broken
   const grad = gradient || gradientFor(`${title} ${artist}`)
   const clear = () => {
     setFailedUrl(resolved)
     if (typeof hookSet === 'function') { try { hookSet(null) } catch { /* noop */ } }
   }
+  const handleError = () => {
+    if (!retriedRef.current && resolved) {
+      // First failure (often a slow-mobile CDN hiccup): retry once after
+      // 1500ms with a cache-buster so the CDN is hit fresh.
+      retriedRef.current = true
+      clearTimeout(timerRef.current)
+      const base = resolved
+      timerRef.current = setTimeout(() => {
+        setRetryFor(base)
+        setRetrySrc(`${base}${base.includes('?') ? '&' : '?'}retry=1`)
+      }, 1500)
+    } else {
+      clearTimeout(timerRef.current)
+      clear()
+    }
+  }
+  useEffect(() => () => clearTimeout(timerRef.current), [])
   return (
     <div className={`relative aspect-square w-full overflow-hidden ${rounded} bg-gradient-to-br ${grad} ${className}`}>
       <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
-      {url && !broken && (
+      {src && (
         <img
           ref={imgRef}
-          src={url}
+          src={src}
           alt=""
-          onError={clear}
-          onLoad={() => setLoadedUrl(resolved)}
+          loading="eager"
+          decoding="async"
+          onError={handleError}
+          onLoad={() => setLoadedUrl(src)}
           className={`absolute inset-0 w-full h-full object-cover ${loaded ? 'art-enter' : 'art-hidden'}`}
         />
       )}
@@ -927,6 +955,10 @@ export default function HomeScreen({ onSelectTrack, activeTrack }) {
     const op = Math.max(0, 1 - c.scrollTop / 80)
     h.style.setProperty('--header-opacity', op.toFixed(3))
   }, [])
+
+  /* Warm the iTunes metadata cache for the featured tracks on first mount,
+     so tapping one finds art + duration instantly. */
+  useEffect(() => { void prefetchArtwork(CURATED_TRACKS) }, [])
 
   /* Warm the browser cache once rows have loaded so artwork is instant later. */
   const prefetched = useRef(false)

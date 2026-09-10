@@ -5,7 +5,16 @@
 
 import { useEffect, useState } from 'react'
 
-const PREFIX = 'itunes:'
+const PREFIX = 'itunes5:'
+
+/* Module-level request deduplication: one in-flight Promise per song, shared
+   by every mount. Fetching is decoupled from the component lifecycle so fast
+   remounts on mobile never kill a nearly-finished request. */
+const inFlight = new Map()
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
+}
 
 function metaKey(artist, title) {
   return `${PREFIX}${String(artist || '').toLowerCase()}|${String(title || '').toLowerCase()}`
@@ -33,64 +42,112 @@ function saveCached(artist, title, meta) {
   } catch { /* storage full */ }
 }
 
-/* Pick the hit whose artistName most closely matches the provided artist
-   (case-insensitive includes check), falling back to results[0]. */
-function pickBestHit(results, artist) {
+/* Score one iTunes hit against the wanted artist/title. +3 for an artist
+   match (either direction, case-insensitive), +2 for a title match. */
+function scoreHit(hit, artist, title) {
+  let score = 0
+  const a = String(artist || '').trim().toLowerCase()
+  const t = String(title || '').trim().toLowerCase()
+  const ha = String(hit?.artistName || '').trim().toLowerCase()
+  const ht = String(hit?.trackName || '').trim().toLowerCase()
+  if (a && ha && (ha.includes(a) || a.includes(ha))) score += 3
+  if (t && ht && (ht.includes(t) || t.includes(ht))) score += 2
+  return score
+}
+
+/* Highest-scoring result wins; results[0] is the last resort when nothing
+   scores above 0. */
+function pickBestHit(results, artist, title) {
   if (!Array.isArray(results) || results.length === 0) return null
-  const want = String(artist || '').trim().toLowerCase()
-  if (want) {
-    const match = results.find(r => {
-      const got = String(r?.artistName || '').trim().toLowerCase()
-      return got && (got.includes(want) || want.includes(got))
-    })
-    if (match) return match
+  let best = results[0]
+  let bestScore = 0
+  for (const r of results) {
+    const s = scoreHit(r, artist, title)
+    if (s > bestScore) { bestScore = s; best = r }
   }
-  return results[0] || null
+  return best || results[0] || null
 }
 
 function metaFromHit(hit) {
-  // iTunes returns a 100x100 thumbnail; the CDN serves arbitrary sizes by
-  // swapping the dimensions token, so ask for a crisp 600x600.
-  const art = hit?.artworkUrl100 ? hit.artworkUrl100.replace('100x100bb', '600x600bb') : ''
+  // The artwork URL carries a dimensions token (usually 100x100bb, sometimes
+  // 170x170bb or with a .jpg suffix) — swap any of them for a crisp 600x600.
+  const art = hit?.artworkUrl100
+    ? hit.artworkUrl100.replace(/\d+x\d+bb/, '600x600bb')
+    : ''
   const ms = Number(hit?.trackTimeMillis)
   const dur = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : null
   return { art, dur }
 }
 
-async function fetchItunesMeta(artist, title, signal) {
+async function searchOnce(term) {
+  const res = await fetch(
+    `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=5`,
+  )
+  // A network error or non-ok response throws: NOT a cache miss, so the
+  // caller skips the localStorage write and the next mount retries.
+  if (!res.ok) throw new Error(`iTunes search failed: ${res.status}`)
+  const data = await res.json()
+  return Array.isArray(data?.results) ? data.results : []
+}
+
+async function doFetchItunesMeta(artist, title) {
   const first = `${artist || ''} ${title || ''}`.trim()
-  const second = `${title || ''} ${artist || ''}`.trim()
-  const terms = first
-    ? (second && second !== first ? [first, second] : [first])
-    : (second ? [second] : [])
-  if (terms.length === 0) return { art: '', dur: null }
-  for (const term of terms) {
-    const res = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=3`,
-      { signal },
-    )
-    // Network/HTTP error (as opposed to a genuine iTunes miss) throws so the
-    // caller skips the cache write and the next mount retries.
-    if (!res.ok) throw new Error(`iTunes search failed: ${res.status}`)
-    const data = await res.json()
-    const results = data?.results
-    if (!Array.isArray(results) || results.length === 0) continue
-    const hit = pickBestHit(results, artist)
-    if (!hit) continue
-    return metaFromHit(hit)
+  if (!first) return { art: '', dur: null }
+  let results = await searchOnce(first)
+  if (results.length === 0) {
+    // CDN variance sometimes answers empty on the first try — retry once
+    // after 800ms with the query reversed.
+    const reversed = `${title || ''} ${artist || ''}`.trim()
+    if (reversed && reversed !== first) {
+      await sleep(800)
+      results = await searchOnce(reversed)
+    }
   }
-  return { art: '', dur: null }
+  // Empty after retry is a genuine miss, worth caching so we don't re-fetch.
+  if (results.length === 0) return { art: '', dur: null }
+  return metaFromHit(pickBestHit(results, artist, title))
+}
+
+function fetchItunesMeta(artist, title) {
+  const key = metaKey(artist, title)
+  const existing = inFlight.get(key)
+  if (existing) return existing
+  const p = doFetchItunesMeta(artist, title).finally(() => {
+    if (inFlight.get(key) === p) inFlight.delete(key)
+  })
+  inFlight.set(key, p)
+  return p
 }
 
 /* Canonical track length (seconds) from iTunes, or null on miss. Reads the
    shared cache first; a single fetch populates both artwork and duration so a
    later useArtwork() mount for the same song is free. */
-export async function fetchItunesDuration(artist, title, signal) {
+export async function fetchItunesDuration(artist, title) {
   const cached = loadCached(artist, title)
   if (cached) return cached.dur
-  const meta = await fetchItunesMeta(artist, title, signal)
+  const meta = await fetchItunesMeta(artist, title)
   saveCached(artist, title, meta)
   return meta.dur
+}
+
+/* Warm the cache for a list of tracks ahead of time. Sequential with a 200ms
+   gap between calls to stay under iTunes rate limits; skips anything already
+   cached and never writes on network errors. */
+export async function prefetchArtwork(tracks) {
+  if (!Array.isArray(tracks)) return
+  let first = true
+  for (const t of tracks) {
+    const artist = t?.artist
+    const title = t?.title
+    if (!artist && !title) continue
+    if (loadCached(artist, title)) continue
+    if (!first) await sleep(200)
+    first = false
+    try {
+      const meta = await fetchItunesMeta(artist, title)
+      saveCached(artist, title, meta)
+    } catch { /* network error — skip, do not cache */ }
+  }
 }
 
 /* React hook: returns [url, setUrl] — the artwork URL for a track (or null
@@ -98,24 +155,43 @@ export async function fetchItunesDuration(artist, title, signal) {
    image to the gradient fallback. Reads cache synchronously on mount (no
    flash for known songs), then fetches in the background for cache-cold
    songs. Genuine misses are cached; network errors are not, so the next
-   mount retries. */
+   mount retries. No AbortController: the shared fetch runs to completion
+   even if this component unmounts, warming the cache for the next mount —
+   only setUrl is gated by the cancelled flag. */
 export function useArtwork(artist, title) {
   const [url, setUrl] = useState(() => loadCached(artist, title)?.art || null)
 
   useEffect(() => {
     const cached = loadCached(artist, title)
-    if (cached) { setUrl(cached.art || null); return } // '' and null both mean "no art"
-
+    if (cached?.art) {
+      setUrl(cached.art)
+      return undefined
+    }
+    if (!cached) {
+      let cancelled = false
+      fetchItunesMeta(artist, title)
+        .then(meta => {
+          saveCached(artist, title, meta) // runs even when unmounted
+          if (!cancelled) setUrl(meta.art || null)
+        })
+        .catch(() => { /* network error — do not cache, keep the gradient fallback */ })
+      return () => { cancelled = true }
+    }
+    // Stale empty-art entry with a valid duration: stay on the gradient for
+    // now, but re-fetch art in the background after 2000ms in case iTunes
+    // has it now. A still-missing entry leaves the cache untouched.
+    if (cached.dur == null) return undefined
     let cancelled = false
-    const ctrl = new AbortController()
-    fetchItunesMeta(artist, title, ctrl.signal)
-      .then(meta => {
-        if (cancelled) return
-        saveCached(artist, title, meta)
-        setUrl(meta.art || null)
-      })
-      .catch(() => { /* aborted or network error — do not cache, keep the gradient fallback */ })
-    return () => { cancelled = true; ctrl.abort() }
+    const timer = setTimeout(() => {
+      fetchItunesMeta(artist, title)
+        .then(meta => {
+          if (!meta.art) return
+          saveCached(artist, title, { art: meta.art, dur: cached.dur })
+          if (!cancelled) setUrl(meta.art)
+        })
+        .catch(() => { /* network error — keep old entry */ })
+    }, 2000)
+    return () => { cancelled = true; clearTimeout(timer) }
   }, [artist, title])
 
   return [url, setUrl]

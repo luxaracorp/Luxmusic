@@ -408,7 +408,10 @@ const LyricLine = memo(function LyricLine({ index, time, text, isCurrent, colorC
         // Inline styles win over all Tailwind/class specificity and
         // are the only reliable way to force wrapping on iOS Safari.
         display: 'block',
-        width: '100%',
+        // The active line scales 1.32x from the left edge — shrink its layout
+        // width by the same factor so the scaled text still fits exactly
+        // inside the container instead of clipping off-screen on mobile.
+        width: isCurrent ? 'calc(100% / 1.32)' : '100%',
         wordBreak: 'break-word',
         overflowWrap: 'break-word',
         whiteSpace: 'normal',
