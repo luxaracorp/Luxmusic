@@ -452,7 +452,7 @@ export default function PlayerScreen({ track, onBack }) {
   const [inSync, setInSync] = useState(false)
 
   // Album art for this song (background wash + header/desktop thumbnail).
-  const artUrl = useArtwork(track.artist, track.title)
+  const [artUrl] = useArtwork(track.artist, track.title)
   const gradient = track.gradient || gradientFor(`${track.title} ${track.artist}`)
 
   const playerRef = useRef(null)

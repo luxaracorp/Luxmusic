@@ -15,7 +15,7 @@ function greeting() {
    gradient box is always rendered underneath, so there's no layout shift and
    no empty flash — the image just fades in on top when it resolves. */
 function Cover({ artist, title, gradient, rounded = 'rounded-2xl', className = '', children }) {
-  const url = useArtwork(artist, title)
+  const [url, setUrl] = useArtwork(artist, title)
   const grad = gradient || gradientFor(`${title} ${artist}`)
   return (
     <div className={`relative aspect-square w-full overflow-hidden ${rounded} bg-gradient-to-br ${grad} ${className}`}>
@@ -25,7 +25,7 @@ function Cover({ artist, title, gradient, rounded = 'rounded-2xl', className = '
         <img
           src={url}
           alt=""
-          loading="lazy"
+          onError={() => setUrl(null)}
           className="absolute inset-0 w-full h-full object-cover animate-fade-in-up"
           style={{ animationDuration: '0.4s' }}
         />
@@ -57,12 +57,41 @@ export default function HomeScreen({ onSelectTrack }) {
     abortRef.current = ctrl
     setIsSearching(true)
     try {
-      const res = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, { signal: ctrl.signal })
-      if (!res.ok) throw new Error()
-      const data = await res.json()
+      const [itunesRes, lrclibRes] = await Promise.allSettled([
+        fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=8`, { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+        fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+      ])
       // Ignore this response if a newer search has since been started.
       if (id !== reqIdRef.current) return
-      setSearchResults(Array.isArray(data) ? data.slice(0, 10) : [])
+      if (ctrl.signal.aborted) return
+      const itunesHits = itunesRes.status === 'fulfilled' && Array.isArray(itunesRes.value?.results) ? itunesRes.value.results : []
+      const lrclibHits = lrclibRes.status === 'fulfilled' && Array.isArray(lrclibRes.value) ? lrclibRes.value : []
+      const norm = s => String(s || '').trim().toLowerCase()
+      const findLyrics = (artistName, trackName) => {
+        const a = norm(artistName), t = norm(trackName)
+        if (!a || !t) return null
+        const hit = lrclibHits.find(h => norm(h?.artistName) === a && norm(h?.trackName ?? h?.name) === t)
+        return hit?.syncedLyrics || null
+      }
+      let merged = itunesHits
+        .filter(h => h?.trackName && h?.artistName)
+        .map(h => ({
+          id: h.trackId ?? `${h.artistName}-${h.trackName}`,
+          name: h.trackName,
+          artistName: h.artistName,
+          syncedLyrics: findLyrics(h.artistName, h.trackName),
+          trackTimeMillis: h.trackTimeMillis || null,
+        }))
+      if (merged.length === 0 && lrclibHits.length > 0) {
+        merged = lrclibHits.slice(0, 10).map((h, i) => ({
+          id: h?.id ?? `lrclib-${i}`,
+          name: h?.trackName ?? h?.name ?? 'Unknown',
+          artistName: h?.artistName ?? 'Unknown',
+          syncedLyrics: h?.syncedLyrics || null,
+          trackTimeMillis: null,
+        }))
+      }
+      setSearchResults(merged)
     } catch (e) {
       if (e.name === 'AbortError' || id !== reqIdRef.current) return
       setSearchResults([])
@@ -95,6 +124,7 @@ export default function HomeScreen({ onSelectTrack }) {
       videoId: null,
       searchQuery: `${result.artistName || 'Unknown'} ${result.name || 'Unknown'}`,
       syncedLyrics: result.syncedLyrics || null,
+      itunesDurationMs: result.trackTimeMillis || null,
     })
   }, [clearSearch, onSelectTrack])
 

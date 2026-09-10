@@ -33,22 +33,53 @@ function saveCached(artist, title, meta) {
   } catch { /* storage full */ }
 }
 
-async function fetchItunesMeta(artist, title, signal) {
-  const term = `${artist || ''} ${title || ''}`.trim()
-  if (!term) return { art: '', dur: null }
-  const res = await fetch(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&limit=1`,
-    { signal },
-  )
-  if (!res.ok) return { art: '', dur: null }
-  const data = await res.json()
-  const hit = data?.results?.[0]
+/* Pick the hit whose artistName most closely matches the provided artist
+   (case-insensitive includes check), falling back to results[0]. */
+function pickBestHit(results, artist) {
+  if (!Array.isArray(results) || results.length === 0) return null
+  const want = String(artist || '').trim().toLowerCase()
+  if (want) {
+    const match = results.find(r => {
+      const got = String(r?.artistName || '').trim().toLowerCase()
+      return got && (got.includes(want) || want.includes(got))
+    })
+    if (match) return match
+  }
+  return results[0] || null
+}
+
+function metaFromHit(hit) {
   // iTunes returns a 100x100 thumbnail; the CDN serves arbitrary sizes by
   // swapping the dimensions token, so ask for a crisp 600x600.
   const art = hit?.artworkUrl100 ? hit.artworkUrl100.replace('100x100bb', '600x600bb') : ''
   const ms = Number(hit?.trackTimeMillis)
   const dur = Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : null
   return { art, dur }
+}
+
+async function fetchItunesMeta(artist, title, signal) {
+  const first = `${artist || ''} ${title || ''}`.trim()
+  const second = `${title || ''} ${artist || ''}`.trim()
+  const terms = first
+    ? (second && second !== first ? [first, second] : [first])
+    : (second ? [second] : [])
+  if (terms.length === 0) return { art: '', dur: null }
+  for (const term of terms) {
+    const res = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=3`,
+      { signal },
+    )
+    // Network/HTTP error (as opposed to a genuine iTunes miss) throws so the
+    // caller skips the cache write and the next mount retries.
+    if (!res.ok) throw new Error(`iTunes search failed: ${res.status}`)
+    const data = await res.json()
+    const results = data?.results
+    if (!Array.isArray(results) || results.length === 0) continue
+    const hit = pickBestHit(results, artist)
+    if (!hit) continue
+    return metaFromHit(hit)
+  }
+  return { art: '', dur: null }
 }
 
 /* Canonical track length (seconds) from iTunes, or null on miss. Reads the
@@ -62,9 +93,12 @@ export async function fetchItunesDuration(artist, title, signal) {
   return meta.dur
 }
 
-/* React hook: returns the artwork URL for a track, or null while loading / on
-   miss. Reads cache synchronously on mount (no flash for known songs), then
-   fetches in the background for cache-cold songs. */
+/* React hook: returns [url, setUrl] — the artwork URL for a track (or null
+   while loading / on miss) plus its setter so callers can clear a broken
+   image to the gradient fallback. Reads cache synchronously on mount (no
+   flash for known songs), then fetches in the background for cache-cold
+   songs. Genuine misses are cached; network errors are not, so the next
+   mount retries. */
 export function useArtwork(artist, title) {
   const [url, setUrl] = useState(() => loadCached(artist, title)?.art || null)
 
@@ -80,9 +114,9 @@ export function useArtwork(artist, title) {
         saveCached(artist, title, meta)
         setUrl(meta.art || null)
       })
-      .catch(() => { /* aborted or network error — keep the gradient fallback */ })
+      .catch(() => { /* aborted or network error — do not cache, keep the gradient fallback */ })
     return () => { cancelled = true; ctrl.abort() }
   }, [artist, title])
 
-  return url
+  return [url, setUrl]
 }
