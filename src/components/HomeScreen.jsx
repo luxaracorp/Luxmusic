@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { CURATED_TRACKS } from '../App.jsx'
-import { getRecents, gradientFor } from '../lib/recents.js'
+import { getRecents, pushRecent, gradientFor } from '../lib/recents.js'
 import { useArtwork, prefetchArtwork } from '../lib/artwork.js'
+import {
+  getSavedTracks, saveTrack, unsaveTrack, isTrackSaved,
+  getPlaylists, createPlaylist, renamePlaylist, deletePlaylist,
+  addTracksToPlaylist, reorderPlaylist, removeTrackFromPlaylist,
+} from '../lib/playlist.js'
 
 const ACCENT = '#fa2d55'
 const RECENTS_KEY = 'recents:v1'
@@ -579,7 +584,7 @@ function HotRow({ songs, isLoading, onPlay }) {
 
 /* ---------------- mini player ---------------- */
 
-function MiniBar({ track, onOpen, onNext }) {
+function MiniBar({ track, onOpen }) {
   const [paused, setPaused] = useState(false)
   if (!track) return null
   return (
@@ -606,13 +611,6 @@ function MiniBar({ track, onOpen, onNext }) {
             <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><rect x="6" y="4" width="4" height="16" rx="1.5" /><rect x="14" y="4" width="4" height="16" rx="1.5" /></svg>
           )}
         </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onNext() }}
-          className="w-9 h-9 rounded-full flex items-center justify-center text-white active:scale-[0.96] transition-transform cursor-pointer"
-          aria-label="Next"
-        >
-          <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 ml-0.5"><polygon points="5,4 15,12 5,20" /><rect x="16" y="4" width="3" height="16" rx="1" /></svg>
-        </button>
       </div>
     </div>
   )
@@ -629,7 +627,7 @@ function loadRecentSearches() {
   }
 }
 
-function SearchTab({ onSelectTrack }) {
+function SearchTab({ onSelectTrack, onSave }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [isSearching, setIsSearching] = useState(false)
@@ -799,27 +797,41 @@ function SearchTab({ onSelectTrack }) {
             {!isSearching && searchResults.length === 0 && (
               <div className="px-5 py-5 text-white/30 text-sm text-center">No results found</div>
             )}
-            {searchResults.map((r, i) => (
-              <button
-                key={r.id || i}
-                onClick={() => selectSearchResult(r)}
-                className="w-full text-left flex items-center gap-3.5 px-4 py-2.5 border-b border-white/[0.05] last:border-0 hover:bg-white/[0.07] active:bg-white/10 transition-colors cursor-pointer"
-              >
-                <div className="w-10 h-10 flex-shrink-0">
-                  <Cover artist={r.artistName} title={r.name} rounded="rounded-lg" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-[0.875rem] font-semibold text-white truncate leading-tight">{r.name}</p>
-                  <p className="text-xs text-white/40 truncate leading-tight mt-0.5">{r.artistName}</p>
-                </div>
-                {r.syncedLyrics && (
-                  <span className="flex-shrink-0 text-[0.6rem] font-semibold text-white/30 uppercase tracking-wider">Lyrics</span>
-                )}
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4 text-white/25 flex-shrink-0">
-                  <polyline points="9,6 15,12 9,18" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-            ))}
+            {searchResults.map((r, i) => {
+              const isSaved = r.name && r.artistName && isTrackSaved({ title: r.name, artist: r.artistName })
+              return (
+                <button
+                  key={r.id || i}
+                  onClick={() => selectSearchResult(r)}
+                  className="w-full text-left flex items-center gap-2 px-4 py-2.5 border-b border-white/[0.05] last:border-0 hover:bg-white/[0.07] active:bg-white/10 transition-colors cursor-pointer"
+                >
+                  <div className="w-10 h-10 flex-shrink-0">
+                    <Cover artist={r.artistName} title={r.name} rounded="rounded-lg" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[0.875rem] font-semibold text-white truncate leading-tight">{r.name}</p>
+                    <p className="text-xs text-white/40 truncate leading-tight mt-0.5">{r.artistName}</p>
+                  </div>
+                  {r.syncedLyrics && (
+                    <span className="flex-shrink-0 text-[0.6rem] font-semibold text-white/30 uppercase tracking-wider">Lyrics</span>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onSave?.({ title: r.name, artist: r.artistName, gradient: gradientFor(`${r.name} ${r.artistName}`), searchQuery: `${r.artistName} ${r.name}` }) }}
+                    className="flex-shrink-0 p-1 text-white/30 hover:text-white transition-colors"
+                    aria-label={isSaved ? 'Remove' : 'Save'}
+                  >
+                    {isSaved ? (
+                      <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4" style={{ color: ACCENT }}><path d="M20.8 5.5v12.6l-8 4.4-8-4.4V5.5a2.5 2.5 0 0 1 2.5-2.5h11a2.5 2.5 0 0 1 2.5 2.5z" /></svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
+                    )}
+                  </button>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4 text-white/25 flex-shrink-0">
+                    <polyline points="9,6 15,12 9,18" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
@@ -850,6 +862,226 @@ function SearchTab({ onSelectTrack }) {
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ---------------- library ---------------- */
+
+function LibraryView({ onPlayTrack, onPlayTracks, onToggleSaved, playlists, setPlaylists, editingPlaylist, setEditingPlaylist, editName, setEditName }) {
+  const [savedTracks, setSavedTracks] = useState(getSavedTracks)
+  const [showSheet, setShowSheet] = useState(false)
+  const [sheetPlaylist, setSheetPlaylist] = useState(null)
+
+  const refresh = useCallback(() => {
+    setSavedTracks(getSavedTracks())
+    setPlaylists(getPlaylists())
+  }, [])
+
+  const playAllSaved = useCallback(() => {
+    if (savedTracks.length === 0) return
+    onPlayTracks(savedTracks.map(t => ({ ...t, syncedLyrics: null, videoId: null })), 0)
+  }, [savedTracks, onPlayTracks])
+
+  const renamePlaylist = useCallback((id) => {
+    setPlaylists(renamePlaylist(id, editName.trim() || getPlaylists().find(p => p.id === id)?.name || ''))
+    setEditingPlaylist(null)
+    setEditName('')
+  }, [editName, setPlaylists])
+
+  if (!savedTracks.length && !playlists.length) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 pb-[calc(8rem+env(safe-area-inset-bottom))]">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 text-white/20">
+          <path d="M4 19V6a2 2 0 0 1 2-2h13v13H6a2 2 0 0 0-2 2Zm0 0a2 2 0 0 0 2 2h13" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="12" cy="12" r="5" />
+        </svg>
+        <p className="text-white/40 font-semibold text-[0.95rem]">Your library is empty</p>
+        <p className="text-white/25 text-xs">Saved songs and playlists will appear here</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto overflow-x-hidden pt-[calc(3.25rem+env(safe-area-inset-top))] pb-[calc(8.5rem+env(safe-area-inset-bottom))]">
+      <div className="px-4 pb-4">
+        <p className="text-[0.72rem] font-bold text-white/30 uppercase tracking-[0.14em] mb-3">SAVED SONGS</p>
+        {savedTracks.length > 0 && (
+          <button
+            onClick={playAllSaved}
+            className="w-full mb-4 py-2.5 rounded-xl bg-white text-black font-semibold text-[0.85rem] active:scale-[0.97] transition-transform cursor-pointer"
+          >
+            Play All • {savedTracks.length}
+          </button>
+        )}
+        <div className="space-y-1">
+          {savedTracks.map((t, i) => (
+            <SavedTrackRow key={`${t.title}-${t.artist}-${i}`} track={t} onPlay={onPlayTrack} onToggleSaved={onToggleSaved} />
+          ))}
+        </div>
+      </div>
+
+      <div className="px-4 pt-4 pb-8">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-[0.72rem] font-bold text-white/30 uppercase tracking-[0.14em]">PLAYLISTS</p>
+          <button
+            onClick={() => { setPlaylists(createPlaylist(`Playlist ${playlists.length + 1}`)); refresh() }}
+            className="text-[0.72rem] font-semibold cursor-pointer"
+            style={{ color: ACCENT }}
+          >
+            New +
+          </button>
+        </div>
+        <div className="space-y-1">
+          {playlists.map(p => (
+            <PlaylistRow
+              key={p.id}
+              playlist={p}
+              isEditing={editingPlaylist === p.id}
+              editName={editName}
+              setEditName={setEditName}
+              startEdit={() => { setEditingPlaylist(p.id); setEditName(p.name) }}
+              confirmEdit={() => { renamePlaylist(p.id); setPlaylists(getPlaylists()) }}
+              onPlay={() => onPlayTracks(p.tracks.map(t => ({ ...t, syncedLyrics: null, videoId: null })), 0)}
+              onAddTracks={() => setSheetPlaylist(p)}
+              onDelete={() => { setPlaylists(deletePlaylist(p.id)); refresh() }}
+            />
+          ))}
+        </div>
+      </div>
+
+      {sheetPlaylist && (
+        <AddTracksSheet
+          playlist={sheetPlaylist}
+          savedTracks={savedTracks}
+          onClose={() => setSheetPlaylist(null)}
+          onAdded={refresh}
+        />
+      )}
+    </div>
+  )
+}
+
+function SavedTrackRow({ track, onPlay, onToggleSaved }) {
+  return (
+    <button
+      onClick={() => onPlay(track)}
+      className="w-full flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-white/[0.06] text-left cursor-pointer"
+    >
+      <div className="w-10 h-10 flex-shrink-0">
+        <Cover artist={track.artist} title={track.title} gradient={track.gradient || gradientFor(`${track.title} ${track.artist}`)} rounded="rounded-lg" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-white font-semibold text-[0.85rem] truncate">{track.title}</p>
+        <p className="text-white/50 font-normal text-[0.72rem] truncate">{track.artist}</p>
+      </div>
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleSaved(track) }}
+        className="flex-shrink-0 p-1.5 text-white/40 hover:text-white transition-colors"
+        aria-label="Remove"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </button>
+  )
+}
+
+function AddTracksSheet({ playlist, savedTracks, onClose, onAdded }) {
+  const [selected, setSelected] = useState({})
+
+  const toggle = useCallback((key) => setSelected(s => ({ ...s, [key]: !s[key] })), [])
+  const addSelected = useCallback(() => {
+    const toAdd = Object.entries(selected).filter(([_, v]) => v).map(([k]) => savedTracks.find(t => `${t.title}-${t.artist}` === k))
+    addTracksToPlaylist(playlist.id, toAdd.filter(Boolean))
+    onAdded()
+    onClose()
+  }, [selected, savedTracks, playlist.id, onAdded, onClose])
+
+  return (
+    <div className="fixed inset-0 z-[80]">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute bottom-0 left-0 right-0 bg-[#1c1c1f] rounded-t-3xl px-5 pt-2 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sheet-up">
+        <div className="mx-auto my-2 w-10 h-1 rounded-full bg-white/20" />
+        <p className="text-white font-semibold text-[0.95rem] text-center mb-4">Add to "{playlist.name}"</p>
+        <div className="max-h-72 overflow-y-auto">
+          {savedTracks.map((t, i) => {
+            const key = `${t.title}-${t.artist}`
+            return (
+              <label key={key + i} className="flex items-center gap-3 px-2 py-2 cursor-pointer hover:bg-white/[0.05] rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={!!selected[key]}
+                  onChange={() => toggle(key)}
+                  className="w-4 h-4 rounded border-white/20 text-white focus:ring-0"
+                  style={{ accentColor: ACCENT }}
+                />
+                <div className="w-9 h-9 flex-shrink-0">
+                  <Cover artist={t.artist} title={t.title} gradient={gradientFor(`${t.title} ${t.artist}`)} rounded="rounded-md" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-white font-semibold text-[0.82rem] truncate">{t.title}</p>
+                  <p className="text-white/40 text-[0.68rem] truncate">{t.artist}</p>
+                </div>
+              </label>
+            )
+          })}
+        </div>
+        <button
+          onClick={addSelected}
+          className="w-full mt-4 py-2.5 rounded-xl bg-white text-black font-semibold text-[0.85rem] active:scale-[0.97] transition-transform cursor-pointer"
+        >
+          Add Selected
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PlaylistRow({ playlist, isEditing, editName, setEditName, startEdit, confirmEdit, onPlay, onAddTracks, onDelete }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-white/[0.06] cursor-pointer" onClick={onPlay}>
+        <div className="w-10 h-10 flex-shrink-0 rounded-lg bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5 text-white/40"><path d="M9 18V5l12-1v13M9 18a3 3 0 1 0 6 0 3 3 0 0 0-6 0zm6 0v-6" /></svg>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-white font-semibold text-[0.85rem] truncate">{playlist.name}</p>
+          <p className="text-white/40 text-[0.68rem]">{playlist.tracks?.length || 0} songs</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-1">
+        <button onClick={startEdit} className="p-1.5 text-white/30 hover:text-white transition-colors" aria-label="Rename">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+            <path d="M2 9l7-7 9 9v4a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9z" />
+          </svg>
+        </button>
+        <button onClick={onAddTracks} className="p-1.5 text-white/30 hover:text-white transition-colors" aria-label="Add tracks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+        <button onClick={onDelete} className="p-1.5 text-white/30 hover:text-[#fa2d55] transition-colors" aria-label="Delete">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+            <path d="M3 6h18M9 6V4a3 3 0 0 1 6 0v2m-7 0v14a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V6" />
+          </svg>
+        </button>
+      </div>
+      {isEditing && (
+        <div className="absolute inset-0 z-[90] flex items-center justify-center bg-black/60" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1c1c1f] rounded-xl px-4 py-3 flex items-center gap-2">
+            <input
+              value={editName}
+              onChange={e => setEditName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && confirmEdit()}
+              className="bg-white/10 border border-white/20 rounded-lg px-2 py-1 text-white text-sm outline-none"
+              autoFocus
+            />
+            <button onClick={confirmEdit} className="text-white font-semibold text-sm">Save</button>
           </div>
         </div>
       )}
@@ -921,8 +1153,12 @@ function BottomNav({ tab, onSwitch, bounceId }) {
 
 /* ---------------- home ---------------- */
 
-export default function HomeScreen({ onSelectTrack, activeTrack }) {
+export default function HomeScreen({ onSelectTrack, onPlayTracks, activeTrack }) {
   const [tab, setTab] = useState('listen')
+  const [savedKey, setSavedKey] = useState(0)
+  const [playlists, setPlaylists] = useState(getPlaylists)
+  const [editingPlaylist, setEditingPlaylist] = useState(null)
+  const [editName, setEditName] = useState('')
   const [bounceId, setBounceId] = useState({})
   const [recents, setRecents] = useState(getRecents)
   const { topSongs, topPicks, isLoadingTop, isLoadingPicks } = useListenNowData()
@@ -934,12 +1170,21 @@ export default function HomeScreen({ onSelectTrack, activeTrack }) {
     onSelectTrack(track)
   }, [onSelectTrack])
 
+  const playTracks = useCallback((tracks, index = 0) => {
+    const list = Array.isArray(tracks) ? tracks : [tracks]
+    pushRecent(list[index] || list[0])
+    setRecents(getRecents())
+    onPlayTracks(list, index)
+  }, [onPlayTracks])
+
   const playHero = useCallback((t) => playTrack(trackFor(t, 'hero')), [playTrack])
   const openMini = useCallback(() => { if (activeTrack) onSelectTrack(activeTrack) }, [activeTrack, onSelectTrack])
-  const playNext = useCallback(() => {
-    if (topSongs.length === 0) return
-    playTrack(trackFor(topSongs[0], 'hot'))
-  }, [topSongs, playTrack])
+
+  const toggleSaved = useCallback((track) => {
+    if (isTrackSaved(track)) unsaveTrack(track)
+    else saveTrack(track)
+    setSavedKey(k => k + 1)
+  }, [])
 
   const switchTab = useCallback((id) => {
     setTab(id)
@@ -1019,21 +1264,24 @@ export default function HomeScreen({ onSelectTrack, activeTrack }) {
           </div>
         )}
 
-        {tab === 'search' && <SearchTab onSelectTrack={playTrack} />}
+        {tab === 'search' && <SearchTab onSelectTrack={playTrack} onSave={toggleSaved} />}
 
-        {tab === 'library' && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 pb-[calc(8rem+env(safe-area-inset-bottom))]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 text-white/20">
-              <path d="M4 19V6a2 2 0 0 1 2-2h13v13H6a2 2 0 0 0-2 2Zm0 0a2 2 0 0 0 2 2h13" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <p className="text-white/40 font-semibold text-[0.95rem]">Coming soon</p>
-            <p className="text-white/25 text-xs">Your library will live here</p>
-          </div>
-        )}
+        {tab === 'library' && <LibraryView
+          key={savedKey}
+          onPlayTrack={playTrack}
+          onPlayTracks={playTracks}
+          onToggleSaved={toggleSaved}
+          playlists={playlists}
+          setPlaylists={setPlaylists}
+          editingPlaylist={editingPlaylist}
+          setEditingPlaylist={setEditingPlaylist}
+          editName={editName}
+          setEditName={setEditName}
+        />}
       </div>
 
       {tab === 'listen' && activeTrack && (
-        <MiniBar track={activeTrack} onOpen={openMini} onNext={playNext} />
+        <MiniBar track={activeTrack} onOpen={openMini} />
       )}
 
       <BottomNav tab={tab} onSwitch={switchTab} bounceId={bounceId} />

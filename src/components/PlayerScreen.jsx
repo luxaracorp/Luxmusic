@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useArtwork, fetchItunesDuration } from '../lib/artwork.js'
 import { gradientFor } from '../lib/recents.js'
+import { saveTrack, unsaveTrack } from '../lib/playlist.js'
 
 function parseLrc(syncedLyrics) {
   if (!syncedLyrics) return []
@@ -440,19 +441,33 @@ const LyricLine = memo(function LyricLine({ index, time, text, isCurrent, colorC
   )
 })
 
-export default function PlayerScreen({ track, onBack }) {
+function formatTime(s) {
+  if (!Number.isFinite(s) || s <= 0) return '--:--'
+  const m = Math.floor(s / 60)
+  const sec = Math.floor(s % 60)
+  return `${m}:${sec.toString().padStart(2, '0')}`
+}
+
+export default function PlayerScreen({ track, queue, queueIndex, shuffle, repeat, showQueueSheet, onBack, onNext, onPrev, onToggleShuffle, onToggleRepeat, onToggleQueue, onTrackSelect }) {
   const [activeVideoId, setActiveVideoId] = useState(null)
   const [lyrics, setLyrics] = useState([])
   const [currentLine, setCurrentLine] = useState(-1)
   const [isPlaying, setIsPlaying] = useState(false)
   const [playerReady, setPlayerReady] = useState(false)
   const [error, setError] = useState(null)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [trackDuration, setTrackDuration] = useState(null)
+  const [savedKey, setSavedKey] = useState(0)
   // Lyric timing offset in seconds: how much later (+) the words appear vs. the
   // player clock, to reconcile a YouTube upload whose intro differs from the
   // studio recording LRCLIB timed the lyrics against.
   const [syncOffset, setSyncOffset] = useState(0)
   // Upload duration matched LRCLIB's studio length — no calibration needed.
   const [inSync, setInSync] = useState(false)
+
+  const progressPct = trackDuration ? (currentTime / trackDuration) * 100 : 0
+  const repeatMode = repeat
+  const isSaved = isTrackSaved(track)
 
   // Album art for this song (background wash + header/desktop thumbnail).
   const [artUrl] = useArtwork(track.artist, track.title)
@@ -480,6 +495,7 @@ export default function PlayerScreen({ track, onBack }) {
   // LRCLIB's reported track length in seconds (the studio master), or null
   // when lyrics came from a passed-in LRC with no known duration.
   const refDurationRef = useRef(null)
+  const lastDurationRef = useRef(null)
   // Spring auto-scroll state + a "paused until" timestamp set when the user
   // scrolls by hand, so we don't fight their manual scrolling.
   const scrollAnimRef = useRef(null)
@@ -747,6 +763,12 @@ export default function PlayerScreen({ track, onBack }) {
         ? p.getPlayerState() === window.YT?.PlayerState?.PLAYING
         : true
       clock.sample(t, rate, playing)
+
+      const dur = typeof p.getDuration === 'function' ? p.getDuration() : 0
+      if (dur && dur !== lastDurationRef.current) {
+        lastDurationRef.current = dur
+        setTrackDuration(dur)
+      }
     }, CLOCK_SAMPLE_MS)
     return () => { clearInterval(id); clock.resync() }
   }, [playerReady])
@@ -785,6 +807,8 @@ export default function PlayerScreen({ track, onBack }) {
 
       const time = clockRef.current.now()
       if (time == null) return
+
+      setCurrentTime(time)
 
       // While a click-seek is in flight, hold the clicked line until playback
       // has actually reached it. Resuming earlier would let a keyframe-snapped
@@ -1078,7 +1102,7 @@ export default function PlayerScreen({ track, onBack }) {
         </div>
       </div>
 
-      {/* sync calibration + play / pause */}
+      {/* sync calibration + play / pause + transport */}
       <footer className="relative z-30 flex-shrink-0 flex flex-col items-center gap-3 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-3">
         {isReady && lyrics.length > 1 && !error && (
           <div className="flex items-center gap-1 text-white/60 text-xs font-medium">
@@ -1105,22 +1129,104 @@ export default function PlayerScreen({ track, onBack }) {
           </div>
         )}
 
-        <button
-          onClick={togglePlay}
-          className="w-[3.75rem] h-[3.75rem] rounded-full bg-white/12 backdrop-blur-xl border border-white/20 flex items-center justify-center text-white hover:bg-white/20 active:bg-white/30 transition-all active:scale-90 cursor-pointer"
-          aria-label={isPlaying ? 'Pause' : 'Play'}
-        >
-          {isPlaying ? (
-            <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
-              <rect x="6" y="4" width="4" height="16" rx="1.5" />
-              <rect x="14" y="4" width="4" height="16" rx="1.5" />
+        <div className="flex items-center gap-5">
+          <button
+            onClick={onToggleShuffle}
+            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer ${shuffle ? 'bg-[#fa2d55] text-white' : 'text-white/35 hover:text-white'}`}
+            aria-label="Shuffle"
+            aria-pressed={shuffle}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+              <path d="M4 3v4h4M7 3l4 4-4 4M7 7h10a4 4 0 0 1 0 8m-6 4h4m-4 0l4 4m0 0v-4" />
             </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7 ml-0.5">
-              <polygon points="6,4 20,12 6,20" />
+          </button>
+
+          <button
+            onClick={onPrev}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white/50 hover:text-white transition-colors cursor-pointer"
+            aria-label="Previous"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+              <polygon points="19,20 9,12 19,4" />
+              <line x1="9" y1="4" x2="9" y2="20" strokeWidth="2" stroke="currentColor" />
             </svg>
-          )}
-        </button>
+          </button>
+
+          <button
+            onClick={togglePlay}
+            className="w-[3.75rem] h-[3.75rem] rounded-full bg-white/12 backdrop-blur-xl border border-white/20 flex items-center justify-center text-white hover:bg-white/20 active:bg-white/30 transition-all active:scale-90 cursor-pointer"
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? (
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7">
+                <rect x="6" y="4" width="4" height="16" rx="1.5" />
+                <rect x="14" y="4" width="4" height="16" rx="1.5" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-7 h-7 ml-0.5">
+                <polygon points="6,4 20,12 6,20" />
+              </svg>
+            )}
+          </button>
+
+          <button
+            onClick={onNext}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white/50 hover:text-white transition-colors cursor-pointer"
+            aria-label="Next"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+              <polygon points="5,4 15,12 5,20" />
+              <line x1="15" y1="4" x2="15" y2="20" strokeWidth="2" stroke="currentColor" />
+            </svg>
+          </button>
+
+          <button
+            onClick={onToggleRepeat}
+            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+              repeatMode === 'one' ? 'bg-[#fa2d55] text-white' :
+              repeatMode === 'all' ? 'text-white' : 'text-white/35 hover:text-white'
+            }`}
+            aria-label="Repeat"
+            aria-pressed={repeatMode !== 'off'}
+            aria-label={`Repeat: ${repeatMode}`}
+          >
+            {repeatMode === 'off' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+                <path d="M17 1l4 4-4 4" />
+                <path d="M7 11H3m0 0v0a4 4 0 0 0 0 8v0a4 4 0 0 0 8 0" />
+              </svg>
+            )}
+            {repeatMode === 'all' && (
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                <path d="M17 1l4 4-4 4M3 11a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4v-4z" />
+              </svg>
+            )}
+            {repeatMode === 'one' && (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
+                <path d="M17 1l4 4-4 4M7 11h10a4 4 0 0 1 4 4v2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-4a4 4 0 0 1 4-4z" />
+                <circle cx="12" cy="8" r="1.5" fill="currentColor" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 text-white/30 text-xs">
+          <span>{formatTime(currentTime)}</span>
+          <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden max-w-xs">
+            <div className="h-full bg-white/30 rounded-full" style={{ width: `${progressPct}%` }} />
+          </div>
+          <span>{formatTime(trackDuration)}</span>
+          <button
+            onClick={onToggleQueue}
+            className="ml-2 text-white/40 hover:text-white transition-colors cursor-pointer"
+            aria-label="Show queue"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+              <path d="M15 12H3m6 0l3-3m-3 3l3 3" />
+              <rect x="7" y="4" width="2" height="16" />
+            </svg>
+          </button>
+        </div>
       </footer>
     </div>
   )
