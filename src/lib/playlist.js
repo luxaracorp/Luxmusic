@@ -1,4 +1,4 @@
-import { loadJSON, saveJSON, removeKey } from './storage.js'
+import { loadJSON, saveJSON } from './storage.js'
 
 const LIBRARY_KEY = 'library:v1'
 const PLAYLISTS_KEY = 'playlists:v1'
@@ -77,13 +77,13 @@ export function addTracksToPlaylist(id, tracks) {
     const merged = [...p.tracks, ...tracks].filter(t => t && (t.title || t.artist))
     // dedupe by title+artist
     const seen = new Set()
-    const tracks = merged.filter(t => {
+    const deduped = merged.filter(t => {
       const k = `${t.title || ''}${t.artist || ''}`.toLowerCase()
       if (seen.has(k)) return false
       seen.add(k)
       return true
     })
-    return { ...p, tracks }
+    return { ...p, tracks: deduped }
   })
   saveJSON(PLAYLISTS_KEY, next)
   return next.find(p => p.id === id) || null

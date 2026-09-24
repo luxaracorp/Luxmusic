@@ -135,6 +135,11 @@ html, body, #root {
 .animate-screen-in { animation: fadeSlideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) both; }
 
 /* Respect reduced-motion: kill the decorative loops and long transitions. */
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes sheetDown { from { transform: translateY(0); } to { transform: translateY(100%); } }
+.sheet-up { animation: sheetUp 300ms cubic-bezier(0.32,0.72,0,1); }
+.sheet-down { animation: sheetDown 220ms cubic-bezier(0.32,0.72,0,1); }
+
 @media (prefers-reduced-motion: reduce) {
   .animate-float1, .animate-float2, .animate-float3,
   .animate-art-a, .animate-art-b {

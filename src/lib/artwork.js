@@ -4,6 +4,7 @@
 // never cost two separate network round-trips.
 
 import { useEffect, useState } from 'react'
+import { toApiUrl } from './apiProxy.js'
 
 const PREFIX = 'itunes5:'
 
@@ -81,7 +82,7 @@ function metaFromHit(hit) {
 
 async function searchOnce(term) {
   const res = await fetch(
-    `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=5`,
+    toApiUrl(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&media=music&entity=song&limit=5`),
   )
   // A network error or non-ok response throws: NOT a cache miss, so the
   // caller skips the localStorage write and the next mount retries.

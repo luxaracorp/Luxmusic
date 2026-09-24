@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { CURATED_TRACKS } from '../App.jsx'
+import { CURATED_TRACKS } from '../lib/curated.js'
 import { getRecents, pushRecent, gradientFor } from '../lib/recents.js'
 import { useArtwork, prefetchArtwork } from '../lib/artwork.js'
+import { toApiUrl } from '../lib/apiProxy.js'
 import {
   getSavedTracks, saveTrack, unsaveTrack, isTrackSaved,
-  getPlaylists, createPlaylist, renamePlaylist, deletePlaylist,
-  addTracksToPlaylist, reorderPlaylist, removeTrackFromPlaylist,
+  getPlaylists, createPlaylist, deletePlaylist,
+  addTracksToPlaylist, renamePlaylist as doRenamePlaylist,
 } from '../lib/playlist.js'
 
 const ACCENT = '#fa2d55'
@@ -59,8 +60,8 @@ function useListenNowData() {
     if (readListenNowCache()) return // state already initialized from cache above
     let cancelled = false
     Promise.allSettled([
-      fetch('https://itunes.apple.com/us/rss/topsongs/limit=20/json').then(r => { if (!r.ok) throw new Error(); return r.json() }),
-      fetch('https://itunes.apple.com/search?term=top+hits+2024&media=music&entity=song&limit=10').then(r => { if (!r.ok) throw new Error(); return r.json() }),
+      fetch(toApiUrl('https://itunes.apple.com/us/rss/topsongs/limit=20/json')).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+      fetch(toApiUrl('https://itunes.apple.com/search?term=top+hits+2024&media=music&entity=song&limit=10')).then(r => { if (!r.ok) throw new Error(); return r.json() }),
     ]).then(([rss, picks]) => {
       if (cancelled) return
       let songs = []
@@ -502,7 +503,7 @@ function MadeForYou({ onPlay }) {
     if (loadingMood) return
     setLoadingMood(mood.label)
     try {
-      const r = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(mood.query)}&media=music&entity=song&limit=1`)
+      const r = await fetch(toApiUrl(`https://itunes.apple.com/search?term=${encodeURIComponent(mood.query)}&media=music&entity=song&limit=1`))
       if (!r.ok) throw new Error()
       const data = await r.json()
       const h = data?.results?.[0]
@@ -627,10 +628,10 @@ function loadRecentSearches() {
   }
 }
 
-function SearchTab({ onSelectTrack, onSave }) {
+function SearchTab({ onSelectTrack, onSave, onAddToPlaylist }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
-  const [popularTracks, setPopularTracks] = useState([])
+  const [popularTracks, setPopularTracks] = useState(() => readListenNowCache?.()?.topSongs || [])
   const [isSearching, setIsSearching] = useState(false)
   const [recentSearches, setRecentSearches] = useState(loadRecentSearches)
   const debounceRef = useRef(null)
@@ -641,9 +642,9 @@ function SearchTab({ onSelectTrack, onSave }) {
   // Load popular tracks once from iTunes top-songs RSS
   useEffect(() => {
     const cached = readListenNowCache?.()?.topSongs
-    if (cached && Array.isArray(cached)) { setPopularTracks(cached); return }
+    if (cached && Array.isArray(cached) && cached.length > 0) return
     const ctrl = new AbortController()
-    fetch('https://itunes.apple.com/us/rss/topsongs/limit=50/json', { signal: ctrl.signal })
+    fetch(toApiUrl('https://itunes.apple.com/us/rss/topsongs/limit=50/json'), { signal: ctrl.signal })
       .then(r => { if (!r.ok) throw new Error(); return r.json() })
       .then(data => {
         const entries = data?.feed?.entry
@@ -667,8 +668,8 @@ function SearchTab({ onSelectTrack, onSave }) {
     setIsSearching(true)
     try {
       const [itunesRes, lrclibRes] = await Promise.allSettled([
-        fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=8`, { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
-        fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`, { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+        fetch(toApiUrl(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=8`), { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+        fetch(toApiUrl(`https://lrclib.net/api/search?q=${encodeURIComponent(query)}`), { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(); return r.json() }),
       ])
       if (id !== reqIdRef.current) return
       if (ctrl.signal.aborted) return
@@ -879,6 +880,15 @@ function SearchTab({ onSelectTrack, onSave }) {
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
                     )}
                   </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onAddToPlaylist?.({ title: r.name, artist: r.artistName, gradient: gradientFor(`${r.name} ${r.artistName}`), searchQuery: `${r.artistName} ${r.name}` }) }}
+                    className="flex-shrink-0 p-1 text-white/30 hover:text-white transition-colors"
+                    aria-label="Add to playlist"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                      <path d="M4 6h16M9 12h6M9 18h6" />
+                    </svg>
+                  </button>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4 text-white/25 flex-shrink-0">
                     <polyline points="9,6 15,12 9,18" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
@@ -956,24 +966,31 @@ function SearchTab({ onSelectTrack, onSave }) {
 
 function LibraryView({ onPlayTrack, onPlayTracks, onToggleSaved, playlists, setPlaylists, editingPlaylist, setEditingPlaylist, editName, setEditName }) {
   const [savedTracks, setSavedTracks] = useState(getSavedTracks)
-  const [showSheet, setShowSheet] = useState(false)
   const [sheetPlaylist, setSheetPlaylist] = useState(null)
 
   const refresh = useCallback(() => {
     setSavedTracks(getSavedTracks())
     setPlaylists(getPlaylists())
-  }, [])
+  }, [setPlaylists])
 
   const playAllSaved = useCallback(() => {
     if (savedTracks.length === 0) return
     onPlayTracks(savedTracks.map(t => ({ ...t, syncedLyrics: null, videoId: null })), 0)
   }, [savedTracks, onPlayTracks])
 
-  const renamePlaylist = useCallback((id) => {
-    setPlaylists(renamePlaylist(id, editName.trim() || getPlaylists().find(p => p.id === id)?.name || ''))
+  const confirmRename = useCallback((id) => {
+    setPlaylists(doRenamePlaylist(id, editName.trim() || getPlaylists().find(p => p.id === id)?.name || ''))
     setEditingPlaylist(null)
     setEditName('')
   }, [editName, setPlaylists])
+
+  const createNewPlaylist = useCallback(() => {
+    const pl = createPlaylist(`Playlist ${playlists.length + 1}`)
+    setPlaylists([pl, ...playlists])
+    setEditingPlaylist(pl.id)
+    setEditName(pl.name)
+    refresh()
+  }, [playlists, setPlaylists, setEditingPlaylist, setEditName])
 
   if (!savedTracks.length && !playlists.length) {
     return (
@@ -1011,11 +1028,13 @@ function LibraryView({ onPlayTrack, onPlayTracks, onToggleSaved, playlists, setP
         <div className="flex items-center justify-between mb-3">
           <p className="text-[0.72rem] font-bold text-white/30 uppercase tracking-[0.14em]">PLAYLISTS</p>
           <button
-            onClick={() => { setPlaylists(createPlaylist(`Playlist ${playlists.length + 1}`)); refresh() }}
-            className="text-[0.72rem] font-semibold cursor-pointer"
-            style={{ color: ACCENT }}
+            onClick={createNewPlaylist}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-xs font-semibold text-white transition-colors cursor-pointer"
           >
-            New +
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            Add
           </button>
         </div>
         <div className="space-y-1">
@@ -1027,7 +1046,7 @@ function LibraryView({ onPlayTrack, onPlayTracks, onToggleSaved, playlists, setP
               editName={editName}
               setEditName={setEditName}
               startEdit={() => { setEditingPlaylist(p.id); setEditName(p.name) }}
-              confirmEdit={() => { renamePlaylist(p.id); setPlaylists(getPlaylists()) }}
+              confirmEdit={() => { confirmRename(p.id) }}
               onPlay={() => onPlayTracks(p.tracks.map(t => ({ ...t, syncedLyrics: null, videoId: null })), 0)}
               onAddTracks={() => setSheetPlaylist(p)}
               onDelete={() => { setPlaylists(deletePlaylist(p.id)); refresh() }}
@@ -1120,6 +1139,48 @@ function AddTracksSheet({ playlist, savedTracks, onClose, onAdded }) {
         >
           Add Selected
         </button>
+      </div>
+    </div>
+  )
+}
+
+function PickPlaylistSheet({ track, playlists, onClose, onSelect }) {
+  return (
+    <div className="fixed inset-0 z-[80]">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute bottom-0 left-0 right-0 bg-[#1c1c1f] rounded-t-3xl px-5 pt-2 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sheet-up">
+        <div className="mx-auto my-2 w-10 h-1 rounded-full bg-white/20" />
+        <p className="text-white font-semibold text-[0.95rem] text-center mb-1">Add to playlist</p>
+        <div className="flex items-center gap-3 px-2 py-2.5 mb-1">
+          <div className="w-10 h-10 flex-shrink-0">
+            <Cover artist={track.artist} title={track.title} gradient={gradientFor(`${track.title} ${track.artist}`)} rounded="rounded-lg" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-white font-semibold text-[0.85rem] truncate">{track.title}</p>
+            <p className="text-white/40 text-[0.75rem] truncate">{track.artist}</p>
+          </div>
+        </div>
+        <div className="space-y-1 max-h-80 overflow-y-auto">
+          {playlists.length === 0 ? (
+            <p className="text-white/30 text-xs text-center py-4">No playlists yet</p>
+          ) : (
+            playlists.map(p => (
+              <button
+                key={p.id}
+                onClick={() => onSelect(p.id)}
+                className="w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-left hover:bg-white/[0.06] transition-colors"
+              >
+                <div className="w-10 h-10 flex-shrink-0">
+                  <Cover artist={p.name} title="playlist" gradient={gradientFor(p.name)} rounded="rounded-lg" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-white font-semibold text-[0.85rem] truncate">{p.name}</p>
+                  <p className="text-white/30 text-[0.72rem]">{p.tracks?.length || 0} songs</p>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )
@@ -1269,6 +1330,16 @@ export default function HomeScreen({ onSelectTrack, onPlayTracks, activeTrack })
     setSavedKey(k => k + 1)
   }, [])
 
+  const [addToPlaylistTrack, setAddToPlaylistTrack] = useState(null)
+  const openAddToPlaylist = useCallback((track) => setAddToPlaylistTrack(track), [])
+  const closeAddToPlaylist = useCallback(() => setAddToPlaylistTrack(null), [])
+
+  const confirmAddToPlaylist = useCallback((playlistId) => {
+    const updated = addTracksToPlaylist(playlistId, [addToPlaylistTrack])
+    setPlaylists(getPlaylists().map(p => p.id === playlistId ? updated : p))
+    setAddToPlaylistTrack(null)
+  }, [addToPlaylistTrack])
+
   const switchTab = useCallback((id) => {
     setTab(id)
     setBounceId(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
@@ -1347,7 +1418,7 @@ export default function HomeScreen({ onSelectTrack, onPlayTracks, activeTrack })
           </div>
         )}
 
-        {tab === 'search' && <SearchTab onSelectTrack={playTrack} onSave={toggleSaved} />}
+        {tab === 'search' && <SearchTab onSelectTrack={playTrack} onSave={toggleSaved} onAddToPlaylist={openAddToPlaylist} />}
 
         {tab === 'library' && <LibraryView
           key={savedKey}
@@ -1362,6 +1433,15 @@ export default function HomeScreen({ onSelectTrack, onPlayTracks, activeTrack })
           setEditName={setEditName}
         />}
       </div>
+
+      {addToPlaylistTrack && (
+        <PickPlaylistSheet
+          track={addToPlaylistTrack}
+          playlists={playlists}
+          onClose={closeAddToPlaylist}
+          onSelect={confirmAddToPlaylist}
+        />
+      )}
 
       {tab === 'listen' && activeTrack && (
         <MiniBar track={activeTrack} onOpen={openMini} />

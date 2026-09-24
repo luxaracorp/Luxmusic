@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { useArtwork, fetchItunesDuration } from '../lib/artwork.js'
 import { gradientFor } from '../lib/recents.js'
 import { saveTrack, unsaveTrack } from '../lib/playlist.js'
+import { toApiUrl } from '../lib/apiProxy.js'
+import { isTrackSaved } from '../lib/playlist.js'
 
 function parseLrc(syncedLyrics) {
   if (!syncedLyrics) return []
@@ -104,7 +106,7 @@ const VIDEO_SOURCES = [
 const VIDEO_FETCH_TIMEOUT = 3500
 
 async function invidiousSearch(host, query, signal) {
-  const res = await fetch(`https://${host}/api/v1/search?q=${encodeURIComponent(query)}&type=video&fields=videoId,author,title,description,lengthSeconds`, { signal })
+  const res = await fetch(toApiUrl(`https://${host}/api/v1/search?q=${encodeURIComponent(query)}&type=video&fields=videoId,author,title,description,lengthSeconds`), { signal })
   if (!res.ok) return []
   const data = await res.json()
   if (!Array.isArray(data)) return []
@@ -115,7 +117,7 @@ async function invidiousSearch(host, query, signal) {
    only, never music videos — so whatever it returns has no intro and lines
    up with duration-matched lyrics automatically. */
 async function pipedSearch(host, query, signal) {
-  const res = await fetch(`https://${host}/search?q=${encodeURIComponent(query)}&filter=music_songs`, { signal })
+  const res = await fetch(toApiUrl(`https://${host}/search?q=${encodeURIComponent(query)}&filter=music_songs`), { signal })
   if (!res.ok) return []
   const data = await res.json()
   return (data?.items || []).map(i => ({
@@ -294,7 +296,7 @@ async function fetchLyricsForDuration(artist, title, duration) {
       track_name: title || '',
       duration: String(Math.round(duration)),
     })
-    const r = await fetch(`https://lrclib.net/api/get?${params}`, { signal: ctrl.signal })
+    const r = await fetch(toApiUrl(`https://lrclib.net/api/get?${params}`), { signal: ctrl.signal })
     if (!r.ok) return null
     const hit = await r.json()
     if (hit?.instrumental || !hit?.syncedLyrics) return null
@@ -376,6 +378,27 @@ function GapDots({ progress = 0.6 }) {
         />
       ))}
     </span>
+  )
+}
+
+/* Small cover for queue-sheet rows — gradient fallback under the image so
+   there's no empty flash while art resolves. */
+function QueueCover({ artist, title, fallbackArt, gradient, className = '' }) {
+  const [artUrl] = useArtwork(artist, title)
+  const resolved = artUrl || fallbackArt
+  const grad = gradient || gradientFor(`${title} ${artist}`)
+  return (
+    <div className={`relative aspect-square w-full overflow-hidden rounded-md bg-gradient-to-br ${grad} ${className}`}>
+      {resolved && (
+        <img
+          src={resolved}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      )}
+    </div>
   )
 }
 
@@ -586,7 +609,7 @@ export default function PlayerScreen({ track, queue, queueIndex, shuffle, repeat
     const searchLyricsFallback = async (targetDuration) => {
       try {
         const q = track.searchQuery || `${track.artist} ${track.title}`
-        const r = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`)
+        const r = await fetch(toApiUrl(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`))
         if (!r.ok) throw new Error()
         const data = await r.json()
         if (cancelled) return
@@ -1030,6 +1053,26 @@ export default function PlayerScreen({ track, queue, queueIndex, shuffle, repeat
             <p className="text-white font-semibold text-[0.95rem] leading-tight truncate">{track.title}</p>
             <p className="text-white/45 text-xs leading-tight mt-0.5 truncate">{track.artist}</p>
           </div>
+
+          <button
+            onClick={() => {
+              if (isSaved) unsaveTrack(track)
+              else saveTrack(track)
+              setSavedKey(k => k + 1)
+            }}
+            className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-white/10 backdrop-blur-xl border border-white/15 hover:bg-white/20 active:bg-white/30 transition-all cursor-pointer text-white/70 hover:text-white"
+            aria-label={isSaved ? 'Remove from library' : 'Save to library'}
+          >
+            {isSaved ? (
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-4.5 h-4.5" style={{ color: '#fa2d55' }}>
+                <path d="M20.8 5.5v12.6l-8 4.4-8-4.4V5.5a2.5 2.5 0 0 1 2.5-2.5h11a2.5 2.5 0 0 1 2.5 2.5z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4.5 h-4.5">
+                <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+              </svg>
+            )}
+          </button>
         </div>
       </div>
 
@@ -1228,6 +1271,45 @@ export default function PlayerScreen({ track, queue, queueIndex, shuffle, repeat
           </button>
         </div>
       </footer>
+
+      {/* queue sheet */}
+      {showQueueSheet && queue && queue.length > 1 && (
+        <div className="fixed inset-0 z-[70] flex flex-col">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onToggleQueue} />
+          <div className="absolute bottom-0 left-0 right-0 bg-[#1c1c1f] rounded-t-3xl pt-2 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sheet-up">
+            <div className="mx-auto my-2 w-10 h-1 rounded-full bg-white/20" />
+            <div className="px-4 pb-1 flex items-center justify-between">
+              <p className="text-white font-semibold text-[0.9rem]">Up Next</p>
+              <span className="text-white/30 text-[0.72rem] font-semibold">{queue.length - queueIndex - 1} left</span>
+            </div>
+            <div className="overflow-y-auto" style={{ maxHeight: `calc(100vh - 120px - env(safe-area-inset-bottom))` }}>
+              {queue.map((t, i) => {
+                const isPlaying = i === queueIndex
+                return (
+                  <div
+                    key={t.id || `${t.title}-${t.artist}-${i}`}
+                    onClick={() => onTrackSelect(t)}
+                    className={`flex items-center gap-3 px-3 py-2.5 mx-2 rounded-xl transition-colors cursor-pointer ${
+                      isPlaying ? 'bg-white/10' : 'hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className="w-8 h-8 flex-shrink-0">
+                      <QueueCover artist={t.artist} title={t.title} gradient={t.gradient || gradientFor(`${t.title} ${t.artist}`)} className="!w-8 !h-8" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className={`font-semibold truncate ${isPlaying ? 'text-white' : 'text-white/60'}`} style={{ fontSize: '0.8rem' }}>{t.title}</p>
+                      <p className="text-white/30 font-normal text-[0.68rem] truncate">{t.artist}</p>
+                    </div>
+                    {isPlaying && (
+                      <div className="flex-shrink-0 w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
