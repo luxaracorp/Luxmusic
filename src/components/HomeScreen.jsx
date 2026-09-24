@@ -630,12 +630,32 @@ function loadRecentSearches() {
 function SearchTab({ onSelectTrack, onSave }) {
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
+  const [popularTracks, setPopularTracks] = useState([])
   const [isSearching, setIsSearching] = useState(false)
   const [recentSearches, setRecentSearches] = useState(loadRecentSearches)
   const debounceRef = useRef(null)
   const inputRef = useRef(null)
   const reqIdRef = useRef(0)
   const abortRef = useRef(null)
+
+  // Load popular tracks once from iTunes top-songs RSS
+  useEffect(() => {
+    const cached = readListenNowCache?.()?.topSongs
+    if (cached && Array.isArray(cached)) { setPopularTracks(cached); return }
+    const ctrl = new AbortController()
+    fetch('https://itunes.apple.com/us/rss/topsongs/limit=50/json', { signal: ctrl.signal })
+      .then(r => { if (!r.ok) throw new Error(); return r.json() })
+      .then(data => {
+        const entries = data?.feed?.entry
+        if (Array.isArray(entries)) {
+          setPopularTracks(entries.map(parseRssEntry).filter(t => t.title && t.title !== 'Unknown'))
+        }
+      })
+      .catch(() => {})
+    return () => ctrl.abort()
+  }, [])
+
+  const normSearch = s => String(s || '').toLowerCase()
 
   const doSearch = useCallback(async (q) => {
     const query = q.trim()
@@ -661,15 +681,45 @@ function SearchTab({ onSelectTrack, onSave }) {
         const hit = lrclibHits.find(h => norm(h?.artistName) === a && norm(h?.trackName ?? h?.name) === t)
         return hit?.syncedLyrics || null
       }
-      let merged = itunesHits
-        .filter(h => h?.trackName && h?.artistName)
-        .map(h => ({
-          id: h.trackId ?? `${h.artistName}-${h.trackName}`,
-          name: h.trackName,
-          artistName: h.artistName,
-          syncedLyrics: findLyrics(h.artistName, h.trackName),
-          trackTimeMillis: h.trackTimeMillis || null,
-        }))
+      const ql = norm(query)
+      // Score a popular track against the query: exact match = 3, prefix = 2,
+      // substring = 1, no match = 0.
+      const scorePopular = (t) => {
+        const tn = normSearch(t.title), an = normSearch(t.artist || '')
+        const full = `${an} ${tn}`
+        if (full === ql || tn === ql) return 3
+        if (full.startsWith(ql) || tn.startsWith(ql)) return 2
+        if (full.includes(ql) || tn.includes(ql)) return 1
+        if (an.includes(ql)) return 0.5
+        if (tn.includes(ql.split(' ')[0] || '')) return 0.5
+        return 0
+      }
+      // Filter popular tracks that match the query, sorted by score desc
+      const popular = popularTracks
+        .map(t => ({ ...t, score: scorePopular(t) }))
+        .filter(t => t.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 6)
+
+      let merged = [
+        ...popular.map(t => ({
+          id: t.trackId ?? `${t.artist}-${t.title}`,
+          name: t.title,
+          artistName: t.artist,
+          syncedLyrics: findLyrics(t.artist, t.title),
+          trackTimeMillis: null,
+          source: 'popular',
+        })),
+        ...itunesHits
+          .filter(h => h?.trackName && h?.artistName)
+          .map(h => ({
+            id: h.trackId ?? `${h.artistName}-${h.trackName}`,
+            name: h.trackName,
+            artistName: h.artistName,
+            syncedLyrics: findLyrics(h.artistName, h.trackName),
+            trackTimeMillis: h.trackTimeMillis || null,
+          })),
+      ]
       if (merged.length === 0 && lrclibHits.length > 0) {
         merged = lrclibHits.slice(0, 10).map((h, i) => ({
           id: h?.id ?? `lrclib-${i}`,
@@ -686,7 +736,7 @@ function SearchTab({ onSelectTrack, onSave }) {
     } finally {
       if (id === reqIdRef.current) setIsSearching(false)
     }
-  }, [])
+  }, [popularTracks])
 
   const saveRecentSearch = useCallback((name, artistName) => {
     setRecentSearches(prev => {
@@ -812,7 +862,10 @@ function SearchTab({ onSelectTrack, onSave }) {
                     <p className="text-[0.875rem] font-semibold text-white truncate leading-tight">{r.name}</p>
                     <p className="text-xs text-white/40 truncate leading-tight mt-0.5">{r.artistName}</p>
                   </div>
-                  {r.syncedLyrics && (
+                  {r.source === 'popular' && (
+                    <span className="flex-shrink-0 text-[0.6rem] font-semibold text-white/30 uppercase tracking-wider">Popular</span>
+                  )}
+                  {r.syncedLyrics && r.source !== 'popular' && (
                     <span className="flex-shrink-0 text-[0.6rem] font-semibold text-white/30 uppercase tracking-wider">Lyrics</span>
                   )}
                   <button
@@ -835,6 +888,36 @@ function SearchTab({ onSelectTrack, onSave }) {
           </div>
         )}
       </div>
+
+      {!showDropdown && popularTracks.length > 0 && (
+        <div className="max-w-2xl mt-6">
+          <p className="text-[0.72rem] font-bold text-white/30 uppercase tracking-[0.14em] mb-3">Popular</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {popularTracks.slice(0, 6).map((t) => (
+              <button
+                key={t.trackId}
+                onClick={() => selectSearchResult({
+                  id: t.trackId,
+                  name: t.title,
+                  artistName: t.artist,
+                  syncedLyrics: null,
+                  trackTimeMillis: null,
+                  source: 'popular',
+                })}
+                className="flex items-center gap-3 text-left hover:opacity-80 transition-opacity"
+              >
+                <div className="w-14 h-14 flex-shrink-0">
+                  <Cover artist={t.artist} title={t.title} rounded="rounded-lg" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[0.85rem] font-semibold text-white truncate leading-tight">{t.title}</p>
+                  <p className="text-xs text-white/40 truncate leading-tight mt-0.5">{t.artist}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {!showDropdown && recentSearches.length > 0 && (
         <div className="max-w-2xl mt-6">
